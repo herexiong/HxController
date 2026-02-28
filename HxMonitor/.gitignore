@@ -1,0 +1,41 @@
+# C++ objects and libs
+*.slo
+*.lo
+*.o
+*.obj
+*.suo
+*.tlog
+*.ilk
+*.meta
+*.pch
+*.exp
+
+# Qt-specific
+Makefile*
+*build-*/
+*.stash
+*.cache
+*.qmake.stash
+*.qmake.cache
+*.moc
+*.obj
+*.rcc
+*.qm
+*.ui_*.h
+*.pro.user*
+
+# Executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# QTCreator directory
+.qtc_clangd/
+
+# QtCreator Qml
+*.qmlproject.user
+*.qmlproject.user.*
+
+# Logs
+*.log

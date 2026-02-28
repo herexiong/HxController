@@ -1,0 +1,9 @@
+{
+  "name": "com.hxmonitor.proxy",
+  "description": "HxMonitor E2C Proxy for Edge Native Messaging",
+  "path": "e2c_proxy.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://nbmkfkfceagckncedpdhpfjdfoffageb/"
+  ]
+}

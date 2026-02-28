@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Media Control Hub",
+  "version": "1.0.0",
+  "description": "Control media across tabs and communicate with desktop app via Native Messaging.",
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "index.html"
+  },
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "assets/index.ts-B0_hKFH-.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "assets/index.ts-B0_hKFH-.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ]
+}

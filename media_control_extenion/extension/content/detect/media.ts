@@ -4,16 +4,66 @@ export const mediaDetector = {
   _eventCleanup: null as (() => void) | null,
 
   find() {
-    const mediaElements = Array.from(document.querySelectorAll('video, audio'));
-    
+    const mediaElements = Array.from(document.querySelectorAll('video, audio')) as HTMLMediaElement[];
+
     if (mediaElements.length === 0) return null;
 
+    const validElements = mediaElements.filter(el => {
+      // 1. Ignore empty tags used as placeholders (no src attribute, no currentSrc, no <source> children)
+      const hasSrc = el.hasAttribute('src') || el.currentSrc || el.querySelector('source');
+      if (!hasSrc) {
+        return false;
+      }
+
+      // 2. Ignore ambient background videos (usually autoplay + loop + muted)
+      const isAutoPlay = el.autoplay || el.hasAttribute('autoplay') || el.hasAttribute('autoPlay');
+      const isLoop = el.loop || el.hasAttribute('loop');
+      const isMuted = el.muted || el.hasAttribute('muted');
+      const isPlaysInline = el.hasAttribute('playsinline') || el.hasAttribute('playsInline');
+
+      if (el.tagName === 'VIDEO' && isAutoPlay && isLoop && isMuted) {
+        return false;
+      }
+
+      // 2b. playsInline + muted is almost certainly decorative UI
+      if (el.tagName === 'VIDEO' && isPlaysInline && isMuted) {
+         return false;
+      }
+
+      // 2c. Ignore invisible or tiny video elements (1x1 tracking pixels, hidden preloaders)
+      // Only for VIDEO — audio elements legitimately have 0x0 dimensions (custom UI players)
+      if (el.tagName === 'VIDEO' && el.isConnected) {
+         const rect = el.getBoundingClientRect();
+         if (rect.width * rect.height <= 4) {
+             return false;
+         }
+
+         // Fullscreen background wallpaper video (>80% viewport, no controls)
+         if (!el.hasAttribute('controls')) {
+             const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+             const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+             if (rect.width > vw * 0.8 && rect.height > vh * 0.8) {
+                 return false;
+             }
+         }
+      }
+
+      // 3. Ignore tiny notification sounds (< 3s)
+      if (el.readyState >= 1 && el.duration < 3) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (validElements.length === 0) return null;
+
     // Prioritize playing elements
-    const playing = mediaElements.find(el => !(el as HTMLMediaElement).paused);
-    if (playing) return playing as HTMLMediaElement;
+    const playing = validElements.find(el => !el.paused);
+    if (playing) return playing;
 
     // Fallback to the first one
-    return mediaElements[0] as HTMLMediaElement;
+    return validElements[0];
   },
 
   start(onChange: (state: any) => void) {
@@ -29,13 +79,17 @@ export const mediaDetector = {
 
       const el = this.find();
       if (el !== this.element) {
+        // Notify SW that media is gone before unbinding
+        if (!el && this.element) {
+          onChange({ hasMedia: false, playing: false });
+        }
         this.bind(el, onChange);
       } else if (el) {
         // Periodically update metadata in case title changed (SPA navigation)
         onChange(this.getState(false));
       }
     };
-    
+
     this._intervalId = setInterval(check, 2000);
     check();
   },
@@ -63,11 +117,11 @@ export const mediaDetector = {
 
     if (el) {
       console.log('Media element found:', el);
-      
+
       // Create listeners as local variables — ensures correct removal
       const onPlay = () => onChange(this.getState(true));
       const onPause = () => onChange(this.getState(true));
-      
+
       let lastUpdate = 0;
       const onTimeUpdate = () => {
         const now = Date.now();
@@ -87,7 +141,7 @@ export const mediaDetector = {
         el.removeEventListener('pause', onPause);
         el.removeEventListener('timeupdate', onTimeUpdate);
       };
-      
+
       // Initial state
       onChange(this.getState(true));
     }
@@ -148,11 +202,11 @@ export const mediaDetector = {
         artwork = makeAbsolute(art.src);
       }
     }
-    
+
     // If in iframe and title is generic/empty, clear it so SW can fill with Tab title
     if (window.self !== window.top) {
         if (!title || title === 'about:blank' || title.startsWith('http')) {
-            title = ''; 
+            title = '';
         }
     }
 

@@ -23,7 +23,7 @@
   "content_scripts": [
     {
       "js": [
-        "assets/index.ts-B0_hKFH-.js"
+        "assets/index.ts-CiDdXUA_.js"
       ],
       "matches": [
         "<all_urls>"
@@ -38,7 +38,7 @@
         "<all_urls>"
       ],
       "resources": [
-        "assets/index.ts-B0_hKFH-.js"
+        "assets/index.ts-CiDdXUA_.js"
       ],
       "use_dynamic_url": false
     }

@@ -6,13 +6,13 @@
     "isEntry": true
   },
   "extension/content/index.ts": {
-    "file": "assets/index.ts-B0_hKFH-.js",
+    "file": "assets/index.ts-CiDdXUA_.js",
     "name": "index.ts",
     "src": "extension/content/index.ts",
     "isEntry": true
   },
   "extension/sw/index.ts": {
-    "file": "assets/index.ts-DWHpasot.js",
+    "file": "assets/index.ts-hhQuI2UZ.js",
     "name": "index.ts",
     "src": "extension/sw/index.ts",
     "isEntry": true

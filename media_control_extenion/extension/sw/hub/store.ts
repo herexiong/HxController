@@ -40,6 +40,12 @@ export const hubStore = {
   },
 
   updateMediaState(tabId: number, mediaState: MediaState) {
+    // If media disappeared from this tab, treat it as a removal
+    if (!mediaState.hasMedia) {
+      this.removeTab(tabId);
+      return;
+    }
+
     const existing = state.media.byTabId[tabId];
     if (existing) {
       if (!mediaState.isInteraction && existing.playing === mediaState.playing) {

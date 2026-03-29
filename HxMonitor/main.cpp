@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QString>
 #include <QLocalSocket>
+#include <QQuickWindow>
 #include <io.h>
 #include <fcntl.h>
 #include <cstdio>
@@ -66,25 +67,25 @@ int main(int argc, char *argv[])
         }
     }
 
+    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+
     if (g_debugMode) {
         AttachConsole(ATTACH_PARENT_PROCESS);
         freopen("CONOUT$", "w", stderr);
     }
 
-    // Install early so we catch Qt startup messages too
     qInstallMessageHandler(customMessageHandler);
 
     QApplication a(argc, argv);
-    
-    // Check for single instance
+
     QLocalSocket singleInstanceSocket;
     singleInstanceSocket.connectToServer("MediaControlHubPipe", QIODevice::WriteOnly);
     if (singleInstanceSocket.waitForConnected(500)) {
-        QMessageBox::warning(nullptr, "HxMonitor", QString::fromUtf8("程序已经在运行中，请检查系统托盘。"));
+        QMessageBox::warning(nullptr, "HxMonitor", QStringLiteral("The program is already running. Please check the system tray."));
         return 1;
     }
 
-    // Log file path requires QApplication to exist
     QString logPath = QCoreApplication::applicationDirPath() + "/HxMonitor_debug.log";
     g_logFile = new QFile(logPath);
     g_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
@@ -95,7 +96,6 @@ int main(int argc, char *argv[])
     qDebug() << "  Log:" << logPath;
     qDebug() << "========================================";
 
-    // Skip UAC elevation in debug mode
     if (!g_debugMode) {
         QString appPath = QApplication::applicationFilePath();
         if (!restartWithAdminPrivileges(appPath)) {

@@ -1,85 +1,109 @@
-# HxController (Media Control Hub & HxMonitor)
+# HxController
 
-一个用于突破浏览器沙盒限制、实现跨应用全局媒体控制与硬件状态监控的桌面枢纽综合解决方案。
+`HxController` 是一套面向 Windows 的桌面控制与硬件监控方案，当前仓库主要包含：
 
-## 项目简介
+- `HxMonitor`：基于 Qt 6 的桌面主控程序，负责硬件遥测采集、串口桥接、浏览器媒体控制和本地 IPC。
+- `media_control_extenion`：浏览器扩展，用于发现网页媒体会话并把控制指令转发到桌面端。
+- `E2C_Proxy`：Native Messaging / 本地代理相关实现与安装脚本。
 
-**项目解决什么问题**
-通常开发者在开发跨平台的外部物理硬件（如带屏幕的宏键盘、ESP32桌面副屏）或桌面辅助应用时，无法直接跨系统与浏览器内（如 Chrome/Edge）的多个标签页（Bilibili、YouTube 等）进行深度的双向媒体通信。并且直接引入 Chrome Native Messaging 时，极易出现由于多标签页或多 Profile 运行导致的多个高权限桌面宿主进程抢占冲突。
+这次更新重点完成了 `HxMonitor` 的 FluentUI 界面重构，包括新的性能总览面板、趋势曲线、明暗主题适配、调试面板按 `--debug` 显示，以及更稳定的自适应布局。
 
-**核心价值**
-本项目打通了浏览器沙盒壁垒，在外部操作系统级别掌控一切浏览器媒体，能够跨多个独立应用实体聚合网页音视频播放状态；同时桥接外部智能外设来实现硬件监测与一站式多端流转操控，为您提供真正的全局沉浸式交互层。
+## HxMonitor 特性
 
-## 主要功能
+- 基于 `Qt 6.9 + Widgets + QML + FluentUI`
+- 展示 `CPU / GPU / Memory / Network` 分组性能卡片
+- 为关键指标提供短时趋势折线
+- 支持串口桥接，将监控数据同步到外部设备
+- 通过本地 IPC / Native Messaging 与浏览器扩展通信
+- 提供媒体会话列表和快捷控制
+- 支持明暗主题切换
+- `--debug` 模式下显示日志查看与 IPC 日志面板
 
-- **多维硬件系统监控**：实时采集电脑的 CPU、GPU、内存等硬件数据状态，并支持通过串口同步推送到包含外部屏幕的单片机硬件上。
-- **全网页媒体聚合发掘**：穿透浏览器的各标签页层级，全局实时探测带有媒体播放特征（标题、来源、精美封面、当前进度）的媒体实例。
-- **跨应用双向精准遥控**：即使你正在打全屏大作游戏，也可通过该平台/快捷热键直接向隐藏在后台的浏览器网页下发“播放/暂停、快进/后退、呼出画中画”等控制指令。
-- **智能焦点追踪**：即使开启数十个媒体音视频网页，系统后台自研的算法也能确保你的命令永远下发到最新激活、正在看的那个窗口上。
+## 本次界面更新
 
-## 系统特点 / 技术亮点
+- 接入 `FluentUI`
+- 新增 `qml/MainView.qml` 作为主界面
+- 将性能信息重组为总览卡片 + 子组件卡片
+- 优化信息层级、字重、颜色和暗色模式可读性
+- 增加 CPU/GPU/内存/网络趋势曲线
+- 修复窗口缩放时的卡片错位、曲线越界和列表重叠问题
 
-本项目采用独特且稳定的**三层协同架构解耦**：
-1. **扩展控制层 (Extension - MV3)**：驻留在浏览器的探测触角。利用 Vue3 面板展示，利用 Content Script 直接操控 DOM 和 Web Media Session API。
-2. **中间防冲撞层 (E2C Proxy)**：基于 Golang 开发的单文件 Native Messaging 极简代理进程。它无状态、不卡顿，启动后做完美的 JSON `stdin/stdout` 数据透传管线，并在母体断连时拥有极其敏锐的“防僵死/瞬时自毁”防残留特点。
-3. **服务中枢主机层 (HxMonitor - Qt6)**：作为桌面核心控制器。监听 Windows 命名管道 (`Named Pipe`) 支持 1对N 并发广播，确保不管用户手抖开了几个浏览器或配置页，都由同一个 GUI 界面稳定承接，实现单实例防多开。
+## 目录结构
 
-## 快速开始
+```text
+HxController/
+├─ HxMonitor/
+│  ├─ widget.cpp / widget.h
+│  ├─ main.cpp
+│  ├─ qml/
+│  │  └─ MainView.qml
+│  ├─ qml.qrc
+│  ├─ third_party/
+│  │  └─ FluentUI/
+│  ├─ build.md
+│  └─ CLAUDE.md
+├─ media_control_extenion/
+├─ E2C_Proxy/
+└─ README.md
+```
 
-### 环境要求
+## HxMonitor 构建
 
-- **操作系统**：Windows
-- **浏览器**：Microsoft Edge 或 Google Chrome （需支持 Manifest V3）
-- **开发依赖**：Node.js（用于构建扩展），(可选) Qt 6.9+ / Golang（仅供二次开发使用）
+构建环境：
 
-### 安装步骤
+- Qt: `C:\Qt\6.9.0\mingw_64`
+- MinGW: `C:\Qt\Tools\mingw1310_64`
 
-1. **编译加载浏览器扩展**
-   - 进入 `media_control_extenion/` 目录，执行命令 `npm install` 与 `npm run build`。
-   - 打开浏览器访问扩展管理页开启“开发人员模式”。
-   - 选择“加载解压缩的扩展”指向生成的 `dist/` 文件夹。**重点：请牢记浏览器分配给该扩展的一长串 ID**。
-2. **本地代理注册配置**
-   - 进入 `E2C_Proxy/` ，以文本编辑器打开 `manifest.json` (`native-host/com.hxmonitor.proxy.json`)。
-   - 将 `allowed_origins` 修改为对应的值，格式必须为 `chrome-extension://你的扩展ID/`。
-3. **完成系统注入**
-   - 在该代理目录下，**以管理员身份运行 `install_edge.bat`** (或 `install.bat`) ，将代理宿主服务关联进系统注册表。
+常用命令：
 
-### 运行方式
+```powershell
+$env:PATH = "C:\Qt\6.9.0\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;" + $env:PATH
+Set-Location .\HxMonitor\build\Desktop_Qt_6_9_0_MinGW_64_bit-Debug
+mingw32-make.exe release -j8
+windeployqt.exe --qmldir ..\..\qml --qmlimport ..\..\third_party\FluentUI\dist .\release\HxMonitor.exe
+```
 
-1. 双击运行 `HxMonitor.exe`（主控中心）。它会拉起内部性能捕获器并建立监听（程序会自动静默托盘运行）。
-2. 回到浏览器，任意打开一个带有音视频的网站，点击扩展对应的图标面板验证绿灯是否通过长连接点亮。
+正式程序默认输出目录：
 
-### 最小示例
+```text
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/release/HxMonitor.exe
+```
 
-完成上述动作后，在 YouTube/Bilibili 点开任意一条视频。不要点击浏览器任何按钮，打开桌面端 `HxMonitor` 或扩展提供的 Popup UI。你会看到当前视频的名称、封面和进度已经出现在列表中。点击卡片下方的“画中画”按钮，网页视频将立即在系统桌面上以小窗形式悬浮挂起。
+更详细的构建说明见：
 
-## 项目结构
+- [HxMonitor/build.md](./HxMonitor/build.md)
+- [HxMonitor/CLAUDE.md](./HxMonitor/CLAUDE.md)
 
-- `E2C_Proxy/`：Go 语言开发的 Native Messaging Headless 无图形中间转接站源码及编译安装脚本。
-- `HxMonitor/`：核心架构，基于 Qt 6 开发，整合了串口数据转发、PC性能嗅探服务以及与代理的管道通讯中控台。
-- `media_control_extenion/`：Vue 3 + TypeScript 构筑的核心控制扩展前台（负责 UI 呈现、 Service Worker 状态分发与 Content Script 执行）。
+## 运行方式
 
-## 使用示例
+普通模式：
 
-- **副屏硬件联动**：在运行的 `HxMonitor` 主窗口右侧边缘，选择“串口号”下拉菜单对应你的 DIY 硬件设备的 COM 口。点击“连接”，终端设备将在瞬时联通后呈现机器的各类实时硬件数据。
+```powershell
+.\HxMonitor.exe
+```
 
-## 配置说明
+调试模式：
 
-- `HxMonitor.exe` 桌面程序支持通过 `--debug` 参数启动，强制终端弹窗输出日志；常规隐形运行中，默认也会将错误日志挂在于其同目录底下的 `HxMonitor_debug.log`。
+```powershell
+.\HxMonitor.exe --debug
+```
 
-## 常见问题
+调试模式下会额外显示日志相关界面，并在程序目录写入 `HxMonitor_debug.log`。
 
-- **问：为什么浏览器扩展的图标一直显示 Offline 断开状态？**
-  - 首先确认你修改 JSON 时填写的扩展 ID 是否正确且包含两根斜杠 `//`；其次核对里面的 `path` 是不是直接指向了 `.exe` 的绝对物理路径，最后确认是否执行过了批处理脚本进行系统注册表绑定。
-- **问：控制端左下角显示"暂无媒体播放"或者列表空空如也？**
-  - 可能是缓存同步时间差。请保持系统桌面端开启，然后在浏览器页面的播放器里点一下“暂停再播放”，或是重新开启含有多媒体元素的网站让探针初始化。
-- **问：构建 Qt 客户端报权限被拒？(`cannot open output file debug\HxMonitor.exe: Permission denied`)**
-  - 多为程序仍有因管理员提权运行触发的幽灵后台树未被释放。请前往按 `Ctrl+Shift+Esc` 任务管理器中找到详细列表强行结束该程序树即可再次编译。
+## 已知说明
 
-## 文档导航
+- 若 `CmdMonitor.exe` 因提权失败未启动，部分硬件源数据可能受影响，但主界面仍可正常加载。
+- 若重新编译时报 `Permission denied`，通常是旧的 `HxMonitor.exe` 进程还未退出。
 
-对于希望进行深入二次开发或查阅详细接口的开发者，各模块下均附属于独立的详尽文档库：
+## 仓库提交建议
 
-- **核心协议与 Proxy 开发规范**：[E2C_Proxy/doc 目录](./E2C_Proxy/doc/)
-- **桌面核心逻辑、Qt类参考库及已知坑点**：[HxMonitor/doc 目录](./HxMonitor/doc/)
-- **扩展通信模型、模块分工矩阵与 NM Payload 详解**：[media_control_extenion/doc 目录](./media_control_extenion/doc/)
+提交 `HxMonitor` 相关改动时，建议重点检查以下文件：
+
+- `HxMonitor/main.cpp`
+- `HxMonitor/widget.cpp`
+- `HxMonitor/widget.h`
+- `HxMonitor/HxMonitor.pro`
+- `HxMonitor/qml.qrc`
+- `HxMonitor/qml/MainView.qml`
+- `HxMonitor/third_party/FluentUI/dist/FluentUI/`
+

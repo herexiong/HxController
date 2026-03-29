@@ -1,0 +1,18 @@
+# Build caches / temporary generated files
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/debug/
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/release/qml/
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/release/qrc_qml.cpp
+HxMonitor/build_fluentui/
+
+# Vendor workspace caches, keep only runtime FluentUI distribution
+!HxMonitor/third_party/
+!HxMonitor/third_party/FluentUI/
+HxMonitor/third_party/FluentUI/*
+!HxMonitor/third_party/FluentUI/dist/
+!HxMonitor/third_party/FluentUI/dist/FluentUI/
+!HxMonitor/third_party/FluentUI/dist/FluentUI/**
+!HxMonitor/third_party/FluentUI/License
+
+# Local logs
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/release/HxMonitor_debug.log
+HxMonitor/build/Desktop_Qt_6_9_0_MinGW_64_bit-Debug/debug/HxMonitor_debug.log

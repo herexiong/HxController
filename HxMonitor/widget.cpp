@@ -1,652 +1,859 @@
 #include "widget.h"
-#include "ui_widget.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QMessageBox>
-#include <QListWidgetItem>
-#include <QTimer>
 
-#include <QJsonObject>
-#include <QJsonArray>
+#include <QAction>
+#include <QApplication>
+#include <QQmlEngine>
+#include <algorithm>
+#include <QCloseEvent>
+#include <QCoreApplication>
+#include <QDir>
+#include <QHideEvent>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QMenu>
+#include <QMessageBox>
+#include <QQmlContext>
+#include <QRegularExpression>
+#include <QSerialPortInfo>
+#include <QTimer>
+#include <QVBoxLayout>
 
-#define FRAME_BEGIN QString::fromLocal8Bit("BEGIN")
-#define FRAME_END QString::fromLocal8Bit("END")
-#define TARGET_APP_POS QCoreApplication::applicationDirPath()+QString("/CmdMonitor/publish/CmdMonitor.exe")
+#define FRAME_BEGIN QString::fromLatin1("BEGIN")
+#define FRAME_END QString::fromLatin1("END")
+#define TARGET_APP_POS (QCoreApplication::applicationDirPath() + QStringLiteral("/CmdMonitor/publish/CmdMonitor.exe"))
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
-    , ui(new Ui::Widget)
-    , recivedata(new QVector<QString>)
-    ,widgetobj(new QVector<MonitorLable *>)
-    ,serialPort(new QSerialPort(parent))
-    ,ipcHost(nullptr)
-    ,activeTabId(-1)
+    , m_quickWidget(new QQuickWidget(this))
+    , m_process(new QProcess(this))
+    , m_serialConnected(false)
+    , m_serialPort(new QSerialPort(this))
+    , m_ipcHost(nullptr)
+    , m_activeTabId(-1)
+    , m_msgSentCount(0)
+    , m_msgRecvCount(0)
+    , trayIcon(nullptr)
+    , trayIconMenu(nullptr)
+    , quitAction(nullptr)
 {
-    ui->setupUi(this);
+    setMinimumSize(1180, 780);
+    resize(1280, 860);
+    setAttribute(Qt::WA_DeleteOnClose, false);
+    setWindowIcon(QIcon(QCoreApplication::applicationDirPath() + QStringLiteral("/icon.png")));
 
-    this->logbtn = new QPushButton("CatLog",this);
-    this->logbtn->resize(80,25);
-    this->logbtn->show();
-    connect(logbtn,&QPushButton::clicked,this,[](){
-        QProcess::startDetached(TARGET_APP_POS, QStringList() << "LogMode");
-    });
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
-    this->combox = new QComboBox(this);
-    this->combox->resize(180,25);
-    this->combox->move(100,0);
-    this->combox->addItem("Com1");
-    this->combox->show();
+    m_quickWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
+    m_quickWidget->setClearColor(Qt::transparent);
+    m_quickWidget->rootContext()->setContextProperty(QStringLiteral("backend"), this);
+    m_quickWidget->engine()->addImportPath(QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../../third_party/FluentUI/dist")));
+    m_quickWidget->engine()->addImportPath(QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../../../third_party/FluentUI/dist")));
+    m_quickWidget->setSource(QUrl(QStringLiteral("qrc:/qml/MainView.qml")));
+    layout->addWidget(m_quickWidget);
 
-    this->comlabel = new QLabel("串口号",this);
-    this->comlabel->resize(80,25);
-    this->comlabel->move(285,0);
-    this->comlabel->show();
+    connect(m_process, &QProcess::readyReadStandardOutput, this, &Widget::readProcessData);
+    connect(this, &Widget::recivedone, this, &Widget::resolvedata);
 
-    this->connectbtn = new QPushButton("连接",this);
-    this->connectbtn->resize(80,25);
-    this->connectbtn->show();
-    this->connectbtn->move(340,0);
-    connect(connectbtn,&QPushButton::clicked,[&](){
-        QString port = QString(this->combox->currentText()).split("-")[0];//获取串口号
-        USART(port);
-    });
+    m_ipcHost = new LocalServerHost(this);
+    connect(m_ipcHost, &LocalServerHost::messageReceived, this, &Widget::onNativeMessage);
+    connect(m_ipcHost, &LocalServerHost::logMessage, this, &Widget::onNmLog);
+    connect(m_ipcHost, &LocalServerHost::serverStatusChanged, this, &Widget::onServerStatusChanged);
 
-    //执行命令获取
-    process = new QProcess(this);
-    this->startCmdMonitorProcess("");
-
-    //有可读数据读取
-    connect(process, SIGNAL(readyReadStandardOutput()), this, SLOT(readProcessData()));
-    connect(this,SIGNAL(recivedone()),this,SLOT(resolvedata()));
-
-    //托盘初始化
-    QIcon icon = QIcon(QCoreApplication::applicationDirPath() +"/icon.png");
+    QIcon icon(QCoreApplication::applicationDirPath() + QStringLiteral("/icon.png"));
     trayIcon = new QSystemTrayIcon(this);
     trayIcon->setIcon(icon);
-    trayIcon->setToolTip("a trayicon example");
-    trayIcon->show(); //必须调用，否则托盘图标不显示
+    trayIcon->setToolTip(QStringLiteral("HxMonitor"));
+    trayIcon->show();
 
-    //创建菜单项动作(以下动作只对windows有效)
-    quitAction = new QAction("退出~", this);
-    connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit())); //关闭应用，qApp对应的是程序全局唯一指针
+    quitAction = new QAction(QStringLiteral("Quit"), this);
+    connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
 
-    //创建托盘菜单(必须先创建动作，后添加菜单项，还可以加入菜单项图标美化)
     trayIconMenu = new QMenu(this);
-    trayIconMenu->addSeparator();
     trayIconMenu->addAction(quitAction);
     trayIcon->setContextMenu(trayIconMenu);
+    connect(trayIcon, &QSystemTrayIcon::activated, this, &Widget::iconActivated);
 
-    connect(trayIcon,SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
-            this,SLOT(iconActivated(QSystemTrayIcon::ActivationReason)));
-
-    //========== 媒体控制区域 ==========
-    // 媒体列表
-    mediaListWidget = new QListWidget(this);
-    mediaListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    mediaListWidget->setMinimumHeight(120);
-    connect(mediaListWidget, &QListWidget::itemDoubleClicked,
-            this, &Widget::onMediaItemDoubleClicked);
-
-    // 控制按钮
-    playPauseBtn = new QPushButton("⏯ 播放/暂停", this);
-    nextBtn = new QPushButton("⏩ 下一首", this);
-    prevBtn = new QPushButton("⏪ 上一首", this);
-    pipBtn = new QPushButton("📺 画中画", this);
-
-    connect(playPauseBtn, &QPushButton::clicked, this, &Widget::onPlayPauseClicked);
-    connect(nextBtn, &QPushButton::clicked, this, &Widget::onNextClicked);
-    connect(prevBtn, &QPushButton::clicked, this, &Widget::onPrevClicked);
-    connect(pipBtn, &QPushButton::clicked, this, &Widget::onPipClicked);
-
-    QHBoxLayout *mediaBtnLayout = new QHBoxLayout();
-    mediaBtnLayout->addWidget(prevBtn);
-    mediaBtnLayout->addWidget(playPauseBtn);
-    mediaBtnLayout->addWidget(nextBtn);
-    mediaBtnLayout->addWidget(pipBtn);
-
-    QLabel *mediaLabel = new QLabel("\xf0\x9f\x8e\xac \xe6\xb5\x8f\xe8\xa7\x88\xe5\x99\xa8\xe5\xaa\x92\xe4\xbd\x93\xe6\x8e\xa7\xe5\x88\xb6", this);
-    mediaLabel->setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 10px;");
-
-    //========== 诊断面板 ==========
-    msgSentCount = 0;
-    msgRecvCount = 0;
-
-    nmStatusLabel = new QLabel(this);
-    nmStatusLabel->setTextFormat(Qt::RichText);
-    nmStatusLabel->setStyleSheet("font-size: 12px; padding: 4px;");
-
-    refreshBtn = new QPushButton("\xf0\x9f\x94\x84 \xe5\x88\xb7\xe6\x96\xb0", this);
-    refreshBtn->setFixedWidth(80);
-    connect(refreshBtn, &QPushButton::clicked, this, &Widget::onRefreshClicked);
-
-    QHBoxLayout *statusLayout = new QHBoxLayout();
-    statusLayout->addWidget(nmStatusLabel, 1);
-    statusLayout->addWidget(refreshBtn, 0);
-
-    nmLogView = new QTextEdit(this);
-    nmLogView->setReadOnly(true);
-    nmLogView->setFixedHeight(150);
-    nmLogView->setStyleSheet(
-        "QTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
-        "font-family: Consolas, monospace; font-size: 11px; "
-        "border: 1px solid #555; }"
-    );
-
-    QLabel *diagLabel = new QLabel("\xf0\x9f\x94\xa7 IPC Server \xe8\xaf\x8a\xe6\x96\xad", this);
-    diagLabel->setStyleSheet("font-weight: bold; font-size: 13px; margin-top: 8px; color: #888;");
-
-    QVBoxLayout *mediaSection = new QVBoxLayout();
-    mediaSection->addWidget(mediaLabel);
-    mediaSection->addWidget(mediaListWidget);
-    mediaSection->addLayout(mediaBtnLayout);
-    mediaSection->addWidget(diagLabel);
-    mediaSection->addLayout(statusLayout);
-    mediaSection->addWidget(nmLogView);
-
-    // 将媒体控制区域添加到主窗口底部
-    if (!this->layout()) {
-        QVBoxLayout *mainLayout = new QVBoxLayout(this);
-        mainLayout->setContentsMargins(5, 50, 5, 5);
-        mainLayout->addLayout(mediaSection);
-    }
-
-    //========== IPC Server 初始化 ==========
-    ipcHost = new LocalServerHost(this);
-    connect(ipcHost, &LocalServerHost::messageReceived,
-            this, &Widget::onNativeMessage);
-    connect(ipcHost, &LocalServerHost::logMessage,
-            this, &Widget::onNmLog);
-    connect(ipcHost, &LocalServerHost::serverStatusChanged,
-            this, &Widget::updateNmStatus);
-
+    startCmdMonitorProcess(QString());
+    refreshPorts();
     updateNmStatus();
 
-    // 启动时请求一次媒体列表
-    QTimer::singleShot(500, this, [this](){
-        ipcHost->sendCommand("GetMediaList");
+    QTimer::singleShot(500, this, [this]() {
+        refreshMediaList();
     });
 }
 
-void Widget::startCmdMonitorProcess(const QString& cmd)
+Widget::~Widget() = default;
+
+QVariantMap Widget::performanceOverview() const
 {
-    if (process->state() == QProcess::NotRunning) {
-        // qDebug()<<"strat process";
-        process->start(TARGET_APP_POS, QStringList()<<cmd);
-    }
-    if (!process->waitForStarted()) {
-        qDebug() << "Error:" << process->errorString();
-    }
+    return m_performanceOverview;
 }
 
-void Widget::readProcessData(void)
+QVariantList Widget::componentCards() const
 {
-    // 读取子进程标准输出
-    while (process->canReadLine()) {
-        QString data = QString::fromLocal8Bit(process->readLine());
-
-        data.replace("\r", "");
-        data.replace("\n", "");
-        data.replace("\"", "");
-
-        if(data.compare(FRAME_BEGIN) == 0){
-            this->recivedata->clear();//清空容器准备接收
-        }else if(data.compare(FRAME_END) == 0){
-            emit recivedone();//触发信号，解析内容
-        }else{
-            this->recivedata->append(data);
-        }
-    }
+    return m_componentCards;
 }
 
-void Widget::resolvedata(void)
+QVariantList Widget::cpuHistory() const
 {
-    QVector<MonitorLableNode> result;
-    MonitorLableNode currentNode;
-
-    for (const QString& line : *(this->recivedata)) {
-        if (line.startsWith("->")) {
-            // 如果当前节点有数据，将其加入结果
-            if (!currentNode.title.isEmpty() || !currentNode.infolist.isEmpty()) {
-                result.append(currentNode);
-                currentNode = MonitorLableNode(); // 重置当前节点
-            }
-            // 设置新节点的标题
-            currentNode.title = line.mid(2).trimmed();
-        } else {
-            // 按空格分割并添加到当前节点的 infolist
-            QStringList parts = line.split(" ", Qt::SkipEmptyParts);
-            currentNode.infolist.append(parts);
-        }
-    }
-    // 添加最后一个节点（如果有）
-    if (!currentNode.title.isEmpty() || !currentNode.infolist.isEmpty()) {
-        result.append(currentNode);
-    }
-
-    if(!widgetisinit){
-        // 获取或创建垂直布局
-        QVBoxLayout *layout = qobject_cast<QVBoxLayout*>(this->layout());
-        if (!layout) {
-            layout = new QVBoxLayout(this);
-            layout->setContentsMargins(0, 50, 0, 0);
-        }
-        layout->setSpacing(10);
-
-        // 在媒体控制区域之前插入监控组件
-        for(int i = 0;i<result.size();i++)
-        {
-            widgetobj->append(new MonitorLable(result[i],this));
-            layout->insertWidget(i, (*widgetobj)[i]); // 在前面插入
-        }
-        widgetisinit = true;
-    }else{
-        for(int i = 0;i<result.size() && i<widgetobj->size();i++)
-        {
-            (*widgetobj)[i] ->RefreshMonitorLable(result[i]);
-        }
-        RefreshPort();
-    }
-
-    // 构建 JSON 对象
-    QJsonObject json;
-    for(MonitorLableNode node: result)
-    {
-        QJsonObject temp_json = QJsonObject();
-        int type = -1;//0->CPU, 1->GPU, 2->RAM, 3->Net
-        for(int i = 0;i<node.infolist.size();i++)
-        {
-            if(node.infolist[0].startsWith("CPU")) type = 0;
-            else if(node.infolist[0].startsWith("GPU")) type = 1;
-            else if(node.infolist[0].startsWith("内存")) type = 2;
-            else if(node.infolist[0].startsWith("网络")) type = 3;
-            if(type != -1)
-            {
-                switch (type) {
-                case 0://CPU
-                    switch (i) {
-                    case 0:
-                        temp_json.insert("usage",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 1:
-                        temp_json.insert("power",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 2:
-                        temp_json.insert("temp",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    }
-                    break;
-                case 1://GPU
-                    switch (i) {
-                    case 0:
-                        temp_json.insert("usage",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 1:
-                        temp_json.insert("power",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 2:
-                        temp_json.insert("temp",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 3:
-                        temp_json.insert("usedRAM",node.infolist[i].split(':',Qt::SkipEmptyParts)[1].split('/')[0]);
-                        temp_json.insert("totalRAM",node.infolist[i].split(':',Qt::SkipEmptyParts)[1].split('/')[1]);
-                        break;
-                    }
-                    break;
-                case 2://RAM
-                    switch (i) {
-                    case 0:
-                        // temp_json.insert("us",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        temp_json.insert("usedRAM",node.infolist[i].split(':',Qt::SkipEmptyParts)[1].split('/')[0]);
-                        temp_json.insert("totalRAM",node.infolist[i].split(':',Qt::SkipEmptyParts)[1].split('/')[1]);
-                        break;
-                    case 1:
-                        temp_json.insert("usage",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    }
-                    break;
-                case 3://NetWork
-                    switch (i) {
-                    case 0:
-                        temp_json.insert("upload",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    case 1:
-                        temp_json.insert("download",node.infolist[i].split(':',Qt::SkipEmptyParts)[1]);
-                        break;
-                    }
-                    break;
-                }
-            }
-        }
-        switch (type) {
-        case 0:
-            temp_json.insert("title",node.title.split(':',Qt::SkipEmptyParts)[1]);
-            json.insert("CPU", QJsonValue(temp_json));
-            break;
-        case 1:
-            temp_json.insert("title",node.title.split(':',Qt::SkipEmptyParts)[1]);
-            json.insert("GPU", QJsonValue(temp_json));
-            break;
-        case 2:
-            temp_json.insert("title",node.title);
-            json.insert("RAM", QJsonValue(temp_json));
-            break;
-        case 3:
-            temp_json.insert("title",node.title.split(':',Qt::SkipEmptyParts)[1]);
-            json.insert("NET", QJsonValue(temp_json));
-            break;
-        }
-    }
-    // qDebug()<<json;//验证json数据
-    // //串口发送数据
-    if(serialPort) serialPort->write(QJsonDocument(json).toJson().data());
-    // qDebug()<<QJsonDocument(json).toJson().data();//验证json数据
+    return m_cpuHistory;
 }
 
-//刷新可用串口
-void Widget::RefreshPort(void) {
-    QVector<QString>temp;
-    //获取当前可用串口号
-    for (const QSerialPortInfo& info : QSerialPortInfo::availablePorts()) {
-        temp.push_back(info.portName()+"--"+info.description());
-    }
-    //排序现有的串口号,用于比较和原有的差距
-    std::sort(temp.begin(), temp.end(), [](const auto &a, const auto &b) {
-        return a < b; // 升序
-    });
-    if (temp != this->ports) {  //如果可用串口号有变化
-        this->combox->clear();  //清除原有列表
-        this->ports = temp;         //更新串口列表
-        for (auto& a : ports) {     //更新新串口
-            this->combox->addItem(a);
-        }
-    }
-}
-
-//串口通信核心
-void Widget::USART(QString port) {
-    static bool connect_status = false;
-    QSerialPort::BaudRate Baud = QSerialPort::Baud115200;//波特率
-    QSerialPort::DataBits Data = QSerialPort::Data8;     //数据位
-    QSerialPort::StopBits Stop = QSerialPort::OneStop;     //停止位
-    QSerialPort::Parity Check = QSerialPort::NoParity;      //校验位
-
-    // serialPort = new QSerialPort(this);
-    //为串口设置配置
-    serialPort->setBaudRate(Baud);
-    serialPort->setPortName(port);
-    serialPort->setDataBits(Data);
-    serialPort->setParity(Check);
-    serialPort->setStopBits(Stop);
-    if(!connect_status){
-        //打开串口
-        if (serialPort->open(QSerialPort::ReadWrite)) {
-            qDebug()<<"串口打开";
-            connectbtn->setText("关闭连接");
-            connect_status = true;
-        }else {
-            QMessageBox::critical(this, "串口打开失败","请确认串口是否正确连接");
-        }
-    }else{
-        serialPort->close();
-        qDebug()<<"串口关闭";
-        connectbtn->setText("连接");
-        connect_status = false;
-    }
-}
-
-void Widget::iconActivated(QSystemTrayIcon::ActivationReason reason)
+QVariantList Widget::gpuHistory() const
 {
-    switch (reason)
-    {
-    case QSystemTrayIcon::Trigger:
-        // trayIcon->showMessage("title","你单击了"); //后面两个默认参数
-        this->showNormal();
-        break;
-    case QSystemTrayIcon::DoubleClick:
-        // trayIcon->showMessage("title","你双击了");
-        break;
-    case QSystemTrayIcon::MiddleClick:
-        // trayIcon->showMessage("title","你中键了");
-        break;
-    default:
-        break;
+    return m_gpuHistory;
+}
+
+QVariantList Widget::memoryHistory() const
+{
+    return m_memoryHistory;
+}
+
+QVariantList Widget::networkHistory() const
+{
+    return m_networkHistory;
+}
+
+bool Widget::debugMode() const
+{
+    return QCoreApplication::arguments().contains(QStringLiteral("--debug"));
+}
+
+QStringList Widget::serialPorts() const
+{
+    return m_serialPorts;
+}
+
+QString Widget::selectedPort() const
+{
+    return m_selectedPort;
+}
+
+bool Widget::serialConnected() const
+{
+    return m_serialConnected;
+}
+
+QVariantList Widget::mediaItems() const
+{
+    return m_mediaItems;
+}
+
+int Widget::activeTabIdProperty() const
+{
+    return m_activeTabId;
+}
+
+QString Widget::nmStatusText() const
+{
+    return m_nmStatusText;
+}
+
+QString Widget::nmStatusTone() const
+{
+    return m_nmStatusTone;
+}
+
+int Widget::msgSentCountProperty() const
+{
+    return m_msgSentCount;
+}
+
+int Widget::msgRecvCountProperty() const
+{
+    return m_msgRecvCount;
+}
+
+QStringList Widget::nmLogs() const
+{
+    return m_nmLogs;
+}
+
+void Widget::openLogViewer()
+{
+    QProcess::startDetached(TARGET_APP_POS, QStringList() << QStringLiteral("LogMode"));
+}
+
+void Widget::refreshPorts()
+{
+    QStringList ports;
+    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
+        ports.append(info.portName() + QStringLiteral(" -- ") + info.description());
+    }
+    std::sort(ports.begin(), ports.end());
+    if (ports == m_serialPorts) {
+        return;
     }
 
+    m_serialPorts = ports;
+    if (!m_serialPorts.contains(m_selectedPort)) {
+        setSelectedPortInternal(m_serialPorts.isEmpty() ? QString() : m_serialPorts.first(), true);
+    }
+    emit serialPortsChanged();
+}
+
+void Widget::setSelectedPort(const QString &portDisplay)
+{
+    setSelectedPortInternal(portDisplay, true);
+}
+
+void Widget::toggleSerialConnection()
+{
+    if (!m_serialConnected) {
+        const QString portName = selectedPortName();
+        if (portName.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("HxMonitor"), QStringLiteral("Please select a serial port first."));
+            return;
+        }
+
+        m_serialPort->setBaudRate(QSerialPort::Baud115200);
+        m_serialPort->setPortName(portName);
+        m_serialPort->setDataBits(QSerialPort::Data8);
+        m_serialPort->setParity(QSerialPort::NoParity);
+        m_serialPort->setStopBits(QSerialPort::OneStop);
+
+        if (!m_serialPort->open(QSerialPort::ReadWrite)) {
+            QMessageBox::critical(this, QStringLiteral("Serial Port Error"), QStringLiteral("Please verify the device is connected and the port is available."));
+            return;
+        }
+        m_serialConnected = true;
+    } else {
+        m_serialPort->close();
+        m_serialConnected = false;
+    }
+
+    emit serialConnectedChanged();
+}
+
+void Widget::refreshMediaList()
+{
+    sendIpcCommand(QStringLiteral("GetMediaList"));
+}
+
+void Widget::playPause(int tabId)
+{
+    const int resolvedTabId = resolveTabId(tabId);
+    if (resolvedTabId > 0) {
+        sendIpcCommand(QStringLiteral("PlayPause"), QByteArray("{\"tabId\":") + QByteArray::number(resolvedTabId) + "}");
+    } else {
+        sendIpcCommand(QStringLiteral("PlayPause"));
+    }
+}
+
+void Widget::playNext(int tabId)
+{
+    const int resolvedTabId = resolveTabId(tabId);
+    if (resolvedTabId > 0) {
+        sendIpcCommand(QStringLiteral("Next"), QByteArray("{\"tabId\":") + QByteArray::number(resolvedTabId) + "}");
+    } else {
+        sendIpcCommand(QStringLiteral("Next"));
+    }
+}
+
+void Widget::playPrevious(int tabId)
+{
+    const int resolvedTabId = resolveTabId(tabId);
+    if (resolvedTabId > 0) {
+        sendIpcCommand(QStringLiteral("Prev"), QByteArray("{\"tabId\":") + QByteArray::number(resolvedTabId) + "}");
+    } else {
+        sendIpcCommand(QStringLiteral("Prev"));
+    }
+}
+
+void Widget::togglePip(int tabId)
+{
+    const int resolvedTabId = resolveTabId(tabId);
+    if (resolvedTabId > 0) {
+        sendIpcCommand(QStringLiteral("TogglePip"), QByteArray("{\"tabId\":") + QByteArray::number(resolvedTabId) + "}");
+    } else {
+        sendIpcCommand(QStringLiteral("TogglePip"));
+    }
+}
+
+void Widget::activateMedia(int tabId)
+{
+    playPause(tabId);
 }
 
 void Widget::closeEvent(QCloseEvent *event)
 {
-    if(trayIcon->isVisible())
-    {
-        hide(); //隐藏窗口
-        event->ignore(); //忽略事件
+    if (trayIcon && trayIcon->isVisible()) {
+        hide();
+        event->ignore();
+        return;
     }
+    QWidget::closeEvent(event);
 }
 
 void Widget::hideEvent(QHideEvent *event)
 {
-    if(trayIcon->isVisible())
-    {
-        hide(); //隐藏窗口
-        // trayIcon->showMessage("title","隐藏到托盘图标了"); //提示用户隐藏到了托盘
-        event->ignore(); //忽略事件
+    if (trayIcon && trayIcon->isVisible()) {
+        event->ignore();
+        return;
+    }
+    QWidget::hideEvent(event);
+}
+
+void Widget::readProcessData()
+{
+    while (m_process->canReadLine()) {
+        QString data = QString::fromLocal8Bit(m_process->readLine());
+        data.replace(QStringLiteral("\r"), QString());
+        data.replace(QStringLiteral("\n"), QString());
+        data.replace(QStringLiteral("\""), QString());
+
+        if (data == FRAME_BEGIN) {
+            m_receivedData.clear();
+        } else if (data == FRAME_END) {
+            emit recivedone();
+        } else {
+            m_receivedData.append(data);
+        }
     }
 }
 
-
-Widget::~Widget()
+void Widget::resolvedata()
 {
-    delete this->ui;
-    delete this->recivedata;
-    delete this->widgetobj;
+    QVector<MonitorNode> result;
+    MonitorNode currentNode;
+
+    for (const QString &line : std::as_const(m_receivedData)) {
+        if (line.startsWith(QStringLiteral("->"))) {
+            if (!currentNode.title.isEmpty() || !currentNode.infolist.isEmpty()) {
+                result.append(currentNode);
+                currentNode = MonitorNode();
+            }
+            currentNode.title = line.mid(2).trimmed();
+        } else if (!line.trimmed().isEmpty()) {
+            currentNode.infolist.append(line.trimmed());
+        }
+    }
+
+    if (!currentNode.title.isEmpty() || !currentNode.infolist.isEmpty()) {
+        result.append(currentNode);
+    }
+
+    updatePerformanceModel(result);
+
+    QJsonObject json;
+    for (const MonitorNode &node : result) {
+        QJsonObject section;
+        int type = -1;
+        for (int i = 0; i < node.infolist.size(); ++i) {
+            const QString metric = node.infolist.at(i);
+            if (node.infolist.first().startsWith(QStringLiteral("CPU"))) {
+                type = 0;
+            } else if (node.infolist.first().startsWith(QStringLiteral("GPU"))) {
+                type = 1;
+            } else if (node.infolist.first().startsWith(QStringLiteral("\u5185\u5b58"))) {
+                type = 2;
+            } else if (node.infolist.first().startsWith(QStringLiteral("\u7f51\u7edc"))) {
+                type = 3;
+            }
+
+            QString value;
+            if (metric.contains(QLatin1Char(':'))) {
+                value = metric.section(QLatin1Char(':'), 1).trimmed();
+            } else {
+                value = metric.section(QChar(0xff1a), 1).trimmed();
+            }
+
+            switch (type) {
+            case 0:
+                if (i == 0) section.insert(QStringLiteral("usage"), value);
+                if (i == 1) section.insert(QStringLiteral("power"), value);
+                if (i == 2) section.insert(QStringLiteral("temp"), value);
+                break;
+            case 1:
+                if (i == 0) section.insert(QStringLiteral("usage"), value);
+                if (i == 1) section.insert(QStringLiteral("power"), value);
+                if (i == 2) section.insert(QStringLiteral("temp"), value);
+                if (i == 3) {
+                    section.insert(QStringLiteral("usedRAM"), value.section(QLatin1Char('/'), 0, 0).trimmed());
+                    section.insert(QStringLiteral("totalRAM"), value.section(QLatin1Char('/'), 1, 1).trimmed());
+                }
+                break;
+            case 2:
+                if (i == 0) {
+                    section.insert(QStringLiteral("usedRAM"), value.section(QLatin1Char('/'), 0, 0).trimmed());
+                    section.insert(QStringLiteral("totalRAM"), value.section(QLatin1Char('/'), 1, 1).trimmed());
+                }
+                if (i == 1) section.insert(QStringLiteral("usage"), value);
+                break;
+            case 3:
+                if (i == 0) section.insert(QStringLiteral("upload"), value);
+                if (i == 1) section.insert(QStringLiteral("download"), value);
+                break;
+            default:
+                break;
+            }
+        }
+
+        switch (type) {
+        case 0:
+            section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
+            json.insert(QStringLiteral("CPU"), section);
+            break;
+        case 1:
+            section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
+            json.insert(QStringLiteral("GPU"), section);
+            break;
+        case 2:
+            section.insert(QStringLiteral("title"), node.title);
+            json.insert(QStringLiteral("RAM"), section);
+            break;
+        case 3:
+            section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
+            json.insert(QStringLiteral("NET"), section);
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (m_serialConnected && m_serialPort && m_serialPort->isOpen()) {
+        m_serialPort->write(QJsonDocument(json).toJson(QJsonDocument::Compact));
+    }
+
+    refreshPorts();
 }
 
-//========== IPC Server 处理 ==========
+void Widget::iconActivated(QSystemTrayIcon::ActivationReason reason)
+{
+    if (reason == QSystemTrayIcon::Trigger) {
+        showNormal();
+        raise();
+        activateWindow();
+    }
+}
 
 void Widget::onNativeMessage(const QByteArray &rawJson)
 {
-    qDebug() << "[Widget] onNativeMessage raw:" << rawJson;
+    ++m_msgRecvCount;
+    updateNmStatus();
 
     QJsonParseError parseErr;
-    QJsonDocument doc = QJsonDocument::fromJson(rawJson, &parseErr);
-    if (parseErr.error != QJsonParseError::NoError) {
-        qWarning() << "[Widget] JSON parse error:" << parseErr.errorString();
-        return;
-    }
-    QJsonObject msg = doc.object();
-
-    QString type = msg["type"].toString();
-    QString name = msg["name"].toString();
-    qDebug() << "[Widget] type=" << type << "name=" << name;
-
-    if ((type == "evt" && name == "MediaList") ||
-        (type == "res" && name == "GetMediaList")) {
-        QJsonObject payload = msg["payload"].toObject();
-        qDebug() << "[Widget] payload keys:" << payload.keys();
-
-        if (payload["activeTabId"].isNull()) {
-            activeTabId = -1;
-        } else {
-            activeTabId = payload["activeTabId"].toInt();
-        }
-        qDebug() << "[Widget] activeTabId=" << activeTabId;
-
-        QJsonObject tabsObj = payload["tabs"].toObject();
-        qDebug() << "[Widget] tabs keys:" << tabsObj.keys() << "count=" << tabsObj.size();
-        mediaTabsRaw = QJsonDocument(tabsObj).toJson(QJsonDocument::Compact);
-
-        updateMediaListUI();
-    } else {
-        qDebug() << "[Widget] unhandled message type/name, ignoring";
-    }
-}
-
-void Widget::updateMediaListUI()
-{
-    mediaListWidget->clear();
-
-    QJsonDocument tabsDoc = QJsonDocument::fromJson(mediaTabsRaw);
-    QJsonObject mediaTabs = tabsDoc.object();
-    qDebug() << "[Widget] updateMediaListUI: mediaTabsRaw=" << mediaTabsRaw
-             << "mediaTabs.size()=" << mediaTabs.size();
-
-    if (mediaTabs.isEmpty()) {
-        QListWidgetItem *emptyItem = new QListWidgetItem("暂无媒体播放");
-        emptyItem->setFlags(emptyItem->flags() & ~Qt::ItemIsSelectable);
-        mediaListWidget->addItem(emptyItem);
+    const QJsonDocument doc = QJsonDocument::fromJson(rawJson, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
         return;
     }
 
-    QStringList keys = mediaTabs.keys();
-    for (const QString &key : keys) {
-        int tabId = key.toInt();
-        QJsonObject state = mediaTabs[key].toObject();
+    const QJsonObject msg = doc.object();
+    const QString type = msg.value(QStringLiteral("type")).toString();
+    const QString name = msg.value(QStringLiteral("name")).toString();
 
-        QString title = state["title"].toString("未知");
-        QString artist = state["artist"].toString("");
-        bool playing = state["playing"].toBool(false);
-        qint64 durationMs = static_cast<qint64>(state["durationMs"].toDouble(0));
-        qint64 positionMs = static_cast<qint64>(state["positionMs"].toDouble(0));
+    if ((type == QStringLiteral("evt") && name == QStringLiteral("MediaList"))
+        || (type == QStringLiteral("res") && name == QStringLiteral("GetMediaList"))) {
+        const QJsonObject payload = msg.value(QStringLiteral("payload")).toObject();
+        const int newActiveId = payload.value(QStringLiteral("activeTabId")).isNull()
+            ? -1
+            : payload.value(QStringLiteral("activeTabId")).toInt();
 
-        // 格式化时间 mm:ss / mm:ss
-        QString posStr = QString("%1:%2")
-            .arg(positionMs / 60000, 2, 10, QChar('0'))
-            .arg((positionMs / 1000) % 60, 2, 10, QChar('0'));
-        QString durStr = QString("%1:%2")
-            .arg(durationMs / 60000, 2, 10, QChar('0'))
-            .arg((durationMs / 1000) % 60, 2, 10, QChar('0'));
-
-        QString statusIcon = playing ? "\u25b6" : "\u23f8";
-        QString activeMarker = (tabId == activeTabId) ? " \u2605" : "";
-
-        QString displayText = QString("%1 %2 - %3  [%4 / %5]%6")
-            .arg(statusIcon, title, artist, posStr, durStr, activeMarker);
-
-        QListWidgetItem *item = new QListWidgetItem(displayText);
-        item->setData(Qt::UserRole, tabId);  // 存储 tabId
-
-        if (tabId == activeTabId) {
-            item->setSelected(true);
+        if (newActiveId != m_activeTabId) {
+            m_activeTabId = newActiveId;
+            emit activeTabIdChanged();
         }
 
-        mediaListWidget->addItem(item);
+        m_mediaTabsRaw = QJsonDocument(payload.value(QStringLiteral("tabs")).toObject()).toJson(QJsonDocument::Compact);
+        updateMediaItems();
     }
-}
-
-int Widget::getSelectedTabId()
-{
-    QList<QListWidgetItem*> selected = mediaListWidget->selectedItems();
-    if (!selected.isEmpty()) {
-        return selected.first()->data(Qt::UserRole).toInt();
-    }
-    return activeTabId;  // 默认使用 activeTabId
-}
-
-void Widget::onPlayPauseClicked()
-{
-    int tabId = getSelectedTabId();
-    if (tabId > 0) {
-        QByteArray payload = QByteArray("{\"tabId\":") + QByteArray::number(tabId) + "}";
-        ipcHost->sendCommand("PlayPause", payload);
-    } else {
-        ipcHost->sendCommand("PlayPause");
-    }
-}
-
-void Widget::onNextClicked()
-{
-    int tabId = getSelectedTabId();
-    if (tabId > 0) {
-        QByteArray payload = QByteArray("{\"tabId\":") + QByteArray::number(tabId) + "}";
-        ipcHost->sendCommand("Next", payload);
-    } else {
-        ipcHost->sendCommand("Next");
-    }
-}
-
-void Widget::onPrevClicked()
-{
-    int tabId = getSelectedTabId();
-    if (tabId > 0) {
-        QByteArray payload = QByteArray("{\"tabId\":") + QByteArray::number(tabId) + "}";
-        ipcHost->sendCommand("Prev", payload);
-    } else {
-        ipcHost->sendCommand("Prev");
-    }
-}
-
-void Widget::onPipClicked()
-{
-    int tabId = getSelectedTabId();
-    if (tabId > 0) {
-        QByteArray payload = QByteArray("{\"tabId\":") + QByteArray::number(tabId) + "}";
-        ipcHost->sendCommand("TogglePip", payload);
-    } else {
-        ipcHost->sendCommand("TogglePip");
-    }
-}
-
-void Widget::onMediaItemDoubleClicked(QListWidgetItem *item)
-{
-    int tabId = item->data(Qt::UserRole).toInt();
-    if (tabId > 0) {
-        QByteArray payload = QByteArray("{\"tabId\":") + QByteArray::number(tabId) + "}";
-        ipcHost->sendCommand("PlayPause", payload);
-    }
-}
-
-//========== 诊断面板实现 ==========
-
-void Widget::updateNmStatus()
-{
-    QString statusIcon;
-    QString statusText;
-    if (ipcHost) {
-        int clients = ipcHost->clientCount();
-        if (clients > 0) {
-            statusIcon = "\xf0\x9f\x9f\xa2"; // Green circle
-            statusText = QString("\xe5\xb7\xb2\xe8\xbf\x9e\xe6\x8e\xa5 (%1 \xe5\xae\xa2\xe6\x88\xb7\xe7\xab\xaf)").arg(clients); // 已连接 (x 客户端)
-        } else if (ipcHost->isListening()) {
-            statusIcon = "\xf0\x9f\x9f\xa1"; // Yellow circle
-            statusText = "\xe7\xad\x89\xe5\xbe\x85\xe8\xbf\x9e\xe6\x8e\xa5..."; // 等待连接...
-        } else {
-            statusIcon = "\xf0\x9f\x94\xb4"; // Red circle
-            statusText = "\xe6\x9c\x8d\xe5\x8a\xa1\xe5\xbc\x82\xe5\xb8\xb8"; // 服务异常
-        }
-    } else {
-        statusIcon = "\xf0\x9f\x94\xb4";
-        statusText = "\xe5\xb7\xb2\xe6\x96\xad\xe5\xbc\x80"; // 已断开
-    }
-    nmStatusLabel->setText(QString("%1 %2 | \xe5\x8f\x91\xe9\x80\x81: %3  \xe6\x8e\xa5\xe6\x94\xb6: %4")
-        .arg(statusIcon, statusText)
-        .arg(msgSentCount)
-        .arg(msgRecvCount));
 }
 
 void Widget::onNmLog(const QString &log)
 {
-    // 根据方向更新计数
-    if (log.contains("\xe2\xac\x86")) {
-        msgSentCount++;
-    } else if (log.contains("\xe2\xac\x87")) {
-        msgRecvCount++;
+    appendNmLog(log);
+}
+
+void Widget::onServerStatusChanged()
+{
+    updateNmStatus();
+}
+
+void Widget::startCmdMonitorProcess(const QString &cmd)
+{
+    if (m_process->state() == QProcess::NotRunning) {
+        m_process->start(TARGET_APP_POS, QStringList() << cmd);
     }
-    updateNmStatus();
-
-    // 追加日志并自动滚动到底部
-    nmLogView->append(log);
-    QTextCursor cursor = nmLogView->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    nmLogView->setTextCursor(cursor);
+    if (!m_process->waitForStarted()) {
+        qDebug() << "Error:" << m_process->errorString();
+    }
 }
 
-void Widget::onNmDisconnected()
+void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
 {
+    QVariantList componentCards;
+    QVariantList summaryMetrics;
+    QVariantMap overview;
+    MetricSnapshot snapshot;
+
+    static const QHash<QString, QString> accentByKind = {
+        {QStringLiteral("cpu"), QStringLiteral("#4f8cff")},
+        {QStringLiteral("gpu"), QStringLiteral("#13b8a6")},
+        {QStringLiteral("memory"), QStringLiteral("#ff8c42")},
+        {QStringLiteral("network"), QStringLiteral("#9b7bff")}
+    };
+
+    for (const MonitorNode &node : nodes) {
+        QVariantList metrics;
+        const QString title = normalizedTitle(node.title);
+        const QString kind = componentKind(title, node.infolist);
+
+        const QString joined = node.infolist.join(QStringLiteral(" "));
+        QString primaryValue;
+        QString secondaryValue;
+        QString statusText;
+
+        if (kind == QStringLiteral("cpu")) {
+            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
+            const QString power = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:功率|power)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"), QRegularExpression::CaseInsensitiveOption));
+            const QString temp = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:温度|temp(?:erature)?)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*(?:°?C|℃))"), QRegularExpression::CaseInsensitiveOption));
+
+            snapshot.cpuUsage = parsePercentValue(usage);
+            snapshot.cpuValue = usage;
+            primaryValue = usage;
+            secondaryValue = power;
+            statusText = temp;
+
+            if (!usage.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Usage"), usage, QStringLiteral("primary")));
+            if (!power.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Power"), power, QStringLiteral("secondary")));
+            if (!temp.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Temp"), temp, QStringLiteral("accent")));
+        } else if (kind == QStringLiteral("gpu")) {
+            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
+            const QString power = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:功率|power)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"), QRegularExpression::CaseInsensitiveOption));
+            const QString temp = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:温度|temp(?:erature)?)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*(?:°?C|℃))"), QRegularExpression::CaseInsensitiveOption));
+            const QString vram = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(\\d+(?:\\.\\d+)?\\s*[GMK]B?\\s*/\\s*\\d+(?:\\.\\d+)?\\s*[GMK]B?)"), QRegularExpression::CaseInsensitiveOption));
+
+            snapshot.gpuUsage = parsePercentValue(usage);
+            snapshot.gpuValue = usage;
+            primaryValue = usage;
+            secondaryValue = power;
+            statusText = temp;
+
+            if (!usage.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Usage"), usage, QStringLiteral("primary")));
+            if (!power.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Power"), power, QStringLiteral("secondary")));
+            if (!temp.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Temp"), temp, QStringLiteral("accent")));
+            if (!vram.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("VRAM"), vram, QStringLiteral("secondary")));
+            if (!vram.isEmpty() && secondaryValue.isEmpty()) {
+                secondaryValue = vram;
+            }
+        } else if (kind == QStringLiteral("memory")) {
+            const QString capacity = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(\\d+(?:\\.\\d+)?\\s*[GMK]B?\\s*/\\s*\\d+(?:\\.\\d+)?\\s*[GMK]B?)"), QRegularExpression::CaseInsensitiveOption));
+            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
+
+            if (!capacity.isEmpty()) {
+                snapshot.memoryUsage = parseCapacityUsagePercent(capacity.section(QLatin1Char('/'), 0, 0).trimmed(),
+                                                                 capacity.section(QLatin1Char('/'), 1, 1).trimmed());
+                primaryValue = capacity;
+                metrics.append(buildMetricItem(QStringLiteral("Capacity"), capacity, QStringLiteral("primary")));
+            }
+            if (!usage.isEmpty()) {
+                snapshot.memoryUsage = parsePercentValue(usage);
+                snapshot.memoryValue = usage;
+                statusText = usage;
+                metrics.append(buildMetricItem(QStringLiteral("Usage"), usage, QStringLiteral("accent")));
+            } else if (snapshot.memoryUsage > 0.0) {
+                snapshot.memoryValue = QStringLiteral("%1%").arg(QString::number(snapshot.memoryUsage, 'f', 0));
+                statusText = snapshot.memoryValue;
+            }
+        } else if (kind == QStringLiteral("network")) {
+            const QString upload = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:上传|up(?:load)?)\\s*[:：]?\\s*([^\\s]+)"), QRegularExpression::CaseInsensitiveOption));
+            const QString download = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:下载|down(?:load)?)\\s*[:：]?\\s*([^\\s]+)"), QRegularExpression::CaseInsensitiveOption));
+
+            primaryValue = upload;
+            secondaryValue = download;
+            snapshot.networkLevel = std::max(parseNetworkLevel(upload), parseNetworkLevel(download));
+            snapshot.networkValue = download.isEmpty() ? upload : download;
+
+            if (!upload.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Upload"), upload, QStringLiteral("primary")));
+            if (!download.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Download"), download, QStringLiteral("accent")));
+        }
+
+        if (metrics.isEmpty()) {
+            for (const QString &raw : node.infolist) {
+                const ParsedMetric parsed = splitMetric(raw);
+                metrics.append(buildMetricItem(parsed.label, parsed.value, QStringLiteral("secondary")));
+            }
+        }
+
+        QVariantMap card;
+        card.insert(QStringLiteral("title"), title);
+        card.insert(QStringLiteral("kind"), kind);
+        card.insert(QStringLiteral("subtitle"),
+                    kind == QStringLiteral("cpu") ? QStringLiteral("Compute and thermal load") :
+                    kind == QStringLiteral("gpu") ? QStringLiteral("Graphics processor state") :
+                    kind == QStringLiteral("memory") ? QStringLiteral("Capacity pressure and allocation") :
+                    kind == QStringLiteral("network") ? QStringLiteral("Current transfer throughput") :
+                    QStringLiteral("Live telemetry"));
+        card.insert(QStringLiteral("accent"), accentByKind.value(kind, QStringLiteral("#4f8cff")));
+        card.insert(QStringLiteral("primaryValue"), primaryValue);
+        card.insert(QStringLiteral("secondaryValue"), secondaryValue);
+        card.insert(QStringLiteral("statusText"), statusText);
+        card.insert(QStringLiteral("metrics"), metrics);
+        componentCards.append(card);
+    }
+
+    appendHistorySample(m_cpuHistory, snapshot.cpuUsage);
+    appendHistorySample(m_gpuHistory, snapshot.gpuUsage);
+    appendHistorySample(m_memoryHistory, snapshot.memoryUsage);
+    appendHistorySample(m_networkHistory, snapshot.networkLevel);
+
+    summaryMetrics.append(buildMetricItem(QStringLiteral("CPU"), snapshot.cpuValue.isEmpty() ? QStringLiteral("--") : snapshot.cpuValue, QStringLiteral("primary")));
+    summaryMetrics.append(buildMetricItem(QStringLiteral("GPU"), snapshot.gpuValue.isEmpty() ? QStringLiteral("--") : snapshot.gpuValue, QStringLiteral("accent")));
+    summaryMetrics.append(buildMetricItem(QStringLiteral("Memory"), snapshot.memoryValue.isEmpty() ? QStringLiteral("--") : snapshot.memoryValue, QStringLiteral("accent")));
+    summaryMetrics.append(buildMetricItem(QStringLiteral("Network"), QStringLiteral("%1%").arg(QString::number(snapshot.networkLevel, 'f', 0)), QStringLiteral("secondary")));
+
+    overview.insert(QStringLiteral("eyebrow"), QStringLiteral("Performance cockpit"));
+    overview.insert(QStringLiteral("title"), QStringLiteral("System performance"));
+    overview.insert(QStringLiteral("description"), QStringLiteral("Group critical telemetry by subsystem, highlight the hottest signals, and keep recent trends visible."));
+    overview.insert(QStringLiteral("summaryMetrics"), summaryMetrics);
+    overview.insert(QStringLiteral("cpuHeadline"), snapshot.cpuValue.isEmpty() ? QStringLiteral("--") : snapshot.cpuValue);
+    overview.insert(QStringLiteral("gpuHeadline"), snapshot.gpuValue.isEmpty() ? QStringLiteral("--") : snapshot.gpuValue);
+    overview.insert(QStringLiteral("memoryHeadline"), snapshot.memoryValue.isEmpty() ? QStringLiteral("--") : snapshot.memoryValue);
+    overview.insert(QStringLiteral("networkHeadline"), QStringLiteral("%1%").arg(QString::number(snapshot.networkLevel, 'f', 0)));
+
+    m_componentCards = componentCards;
+    m_performanceOverview = overview;
+    emit componentCardsChanged();
+    emit performanceOverviewChanged();
+    emit historiesChanged();
+}
+
+void Widget::updateMediaItems()
+{
+    QVariantList items;
+    const QJsonDocument tabsDoc = QJsonDocument::fromJson(m_mediaTabsRaw);
+    const QJsonObject tabs = tabsDoc.object();
+
+    for (const QString &key : tabs.keys()) {
+        const int tabId = key.toInt();
+        const QJsonObject state = tabs.value(key).toObject();
+        const bool playing = state.value(QStringLiteral("playing")).toBool(false);
+        const qint64 durationMs = static_cast<qint64>(state.value(QStringLiteral("durationMs")).toDouble(0));
+        const qint64 positionMs = static_cast<qint64>(state.value(QStringLiteral("positionMs")).toDouble(0));
+
+        const QString posStr = QStringLiteral("%1:%2")
+                                   .arg(positionMs / 60000, 2, 10, QChar('0'))
+                                   .arg((positionMs / 1000) % 60, 2, 10, QChar('0'));
+        const QString durStr = QStringLiteral("%1:%2")
+                                   .arg(durationMs / 60000, 2, 10, QChar('0'))
+                                   .arg((durationMs / 1000) % 60, 2, 10, QChar('0'));
+
+        QVariantMap item;
+        item.insert(QStringLiteral("tabId"), tabId);
+        item.insert(QStringLiteral("title"), state.value(QStringLiteral("title")).toString(QStringLiteral("Unknown media")));
+        item.insert(QStringLiteral("artist"), state.value(QStringLiteral("artist")).toString(QStringLiteral("Unknown source")));
+        item.insert(QStringLiteral("timeline"), posStr + QStringLiteral(" / ") + durStr);
+        item.insert(QStringLiteral("playing"), playing);
+        item.insert(QStringLiteral("active"), tabId == m_activeTabId);
+        item.insert(QStringLiteral("stateLabel"), playing ? QStringLiteral("Playing") : QStringLiteral("Paused"));
+        items.append(item);
+    }
+
+    std::sort(items.begin(), items.end(), [](const QVariant &left, const QVariant &right) {
+        return left.toMap().value(QStringLiteral("tabId")).toInt() < right.toMap().value(QStringLiteral("tabId")).toInt();
+    });
+
+    m_mediaItems = items;
+    emit mediaItemsChanged();
+}
+
+void Widget::updateNmStatus()
+{
+    if (!m_ipcHost) {
+        m_nmStatusText = QStringLiteral("IPC service not initialized");
+        m_nmStatusTone = QStringLiteral("danger");
+    } else if (m_ipcHost->clientCount() > 0) {
+        m_nmStatusText = QStringLiteral("%1 client(s) connected").arg(m_ipcHost->clientCount());
+        m_nmStatusTone = QStringLiteral("success");
+    } else if (m_ipcHost->isListening()) {
+        m_nmStatusText = QStringLiteral("IPC service listening for browser proxy");
+        m_nmStatusTone = QStringLiteral("warning");
+    } else {
+        m_nmStatusText = QStringLiteral("IPC service failed to start");
+        m_nmStatusTone = QStringLiteral("danger");
+    }
+
+    emit nmStatusChanged();
+}
+
+void Widget::appendNmLog(const QString &log)
+{
+    m_nmLogs.append(log);
+    while (m_nmLogs.size() > 200) {
+        m_nmLogs.removeFirst();
+    }
+    emit nmLogsChanged();
+}
+
+void Widget::sendIpcCommand(const QString &name, const QByteArray &payloadJson)
+{
+    if (!m_ipcHost) {
+        return;
+    }
+    ++m_msgSentCount;
+    m_ipcHost->sendCommand(name, payloadJson);
     updateNmStatus();
 }
 
-void Widget::onRefreshClicked()
+int Widget::resolveTabId(int requestedTabId) const
 {
-    ipcHost->sendCommand("GetMediaList");
+    if (requestedTabId > 0) {
+        return requestedTabId;
+    }
+    return m_activeTabId;
+}
+
+QString Widget::selectedPortName() const
+{
+    return m_selectedPort.section(QStringLiteral(" -- "), 0, 0).trimmed();
+}
+
+void Widget::setSelectedPortInternal(const QString &portDisplay, bool notify)
+{
+    if (m_selectedPort == portDisplay) {
+        return;
+    }
+    m_selectedPort = portDisplay;
+    if (notify) {
+        emit selectedPortChanged();
+    }
+}
+
+Widget::ParsedMetric Widget::splitMetric(const QString &raw) const
+{
+    ParsedMetric metric;
+    if (raw.contains(QChar(0xff1a))) {
+        metric.label = raw.section(QChar(0xff1a), 0, 0).trimmed();
+        metric.value = raw.section(QChar(0xff1a), 1).trimmed();
+    } else if (raw.contains(QLatin1Char(':'))) {
+        metric.label = raw.section(QLatin1Char(':'), 0, 0).trimmed();
+        metric.value = raw.section(QLatin1Char(':'), 1).trimmed();
+    } else {
+        metric.label = QStringLiteral("Metric");
+        metric.value = raw.trimmed();
+    }
+    return metric;
+}
+
+double Widget::parsePercentValue(const QString &text) const
+{
+    QString normalized = text.trimmed();
+    normalized.remove(QLatin1Char('%'));
+    normalized.remove(QLatin1Char(' '));
+    bool ok = false;
+    const double value = normalized.toDouble(&ok);
+    return ok ? std::clamp(value, 0.0, 100.0) : 0.0;
+}
+
+double Widget::parseCapacityUsagePercent(const QString &usedText, const QString &totalText) const
+{
+    auto extractNumber = [](QString text) {
+        text.remove(QRegularExpression(QStringLiteral("[^0-9\\.]")));
+        bool ok = false;
+        const double value = text.toDouble(&ok);
+        return ok ? value : 0.0;
+    };
+
+    const double used = extractNumber(usedText);
+    const double total = extractNumber(totalText);
+    if (total <= 0.0) {
+        return 0.0;
+    }
+    return std::clamp((used / total) * 100.0, 0.0, 100.0);
+}
+
+double Widget::parseNetworkLevel(const QString &text) const
+{
+    QString normalized = text.trimmed().toUpper();
+    double multiplier = 1.0;
+    if (normalized.contains(QStringLiteral("GB"))) {
+        multiplier = 100.0;
+    } else if (normalized.contains(QStringLiteral("MB"))) {
+        multiplier = 12.0;
+    } else if (normalized.contains(QStringLiteral("KB"))) {
+        multiplier = 1.0;
+    }
+
+    normalized.remove(QRegularExpression(QStringLiteral("[^0-9\\.]")));
+    bool ok = false;
+    const double raw = normalized.toDouble(&ok);
+    if (!ok) {
+        return 0.0;
+    }
+    return std::clamp(raw * multiplier, 0.0, 100.0);
+}
+
+QString Widget::normalizedTitle(const QString &rawTitle) const
+{
+    QString title = rawTitle;
+    if (title.startsWith(QStringLiteral("->"))) {
+        title = title.mid(2).trimmed();
+    }
+    return title.trimmed();
+}
+
+QString Widget::componentKind(const QString &title, const QStringList &metrics) const
+{
+    const QString loweredTitle = title.toLower();
+    if (loweredTitle.contains(QStringLiteral("cpu"))) {
+        return QStringLiteral("cpu");
+    }
+    if (loweredTitle.contains(QStringLiteral("gpu"))) {
+        return QStringLiteral("gpu");
+    }
+    if (loweredTitle.contains(QStringLiteral("memory")) || title.contains(QStringLiteral("\u5185\u5b58"))) {
+        return QStringLiteral("memory");
+    }
+    if (loweredTitle.contains(QStringLiteral("network")) || title.contains(QStringLiteral("\u7f51\u7edc"))) {
+        return QStringLiteral("network");
+    }
+
+    for (const QString &metric : metrics) {
+        const QString loweredMetric = metric.toLower();
+        if (loweredMetric.contains(QStringLiteral("cpu"))) {
+            return QStringLiteral("cpu");
+        }
+        if (loweredMetric.contains(QStringLiteral("gpu"))) {
+            return QStringLiteral("gpu");
+        }
+        if (loweredMetric.contains(QStringLiteral("upload")) || loweredMetric.contains(QStringLiteral("download"))) {
+            return QStringLiteral("network");
+        }
+        if (metric.contains(QStringLiteral("\u5185\u5b58"))) {
+            return QStringLiteral("memory");
+        }
+        if (metric.contains(QStringLiteral("\u7f51\u7edc"))) {
+            return QStringLiteral("network");
+        }
+    }
+    return QStringLiteral("generic");
+}
+
+QVariantMap Widget::buildMetricItem(const QString &label, const QString &value, const QString &emphasis) const
+{
+    QVariantMap metric;
+    metric.insert(QStringLiteral("label"), label);
+    metric.insert(QStringLiteral("value"), value);
+    metric.insert(QStringLiteral("emphasis"), emphasis);
+    return metric;
+}
+
+void Widget::appendHistorySample(QVariantList &history, double value, int limit)
+{
+    history.append(std::clamp(value, 0.0, 100.0));
+    while (history.size() > limit) {
+        history.removeFirst();
+    }
+}
+
+QString Widget::extractFirstMatch(const QString &text, const QRegularExpression &regex, int group) const
+{
+    const QRegularExpressionMatch match = regex.match(text);
+    if (!match.hasMatch()) {
+        return QString();
+    }
+    return match.captured(group).trimmed();
 }

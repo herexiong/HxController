@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="/qt/qml/FluentUI">C:/File_Disk/workspace/HxController/HxMonitor/third_party/FluentUI/dist/FluentUI</file>
+
+  </qresource>
+</RCC>

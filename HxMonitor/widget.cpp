@@ -23,6 +23,82 @@
 #define FRAME_END QString::fromLatin1("END")
 #define TARGET_APP_POS (QCoreApplication::applicationDirPath() + QStringLiteral("/CmdMonitor/publish/CmdMonitor.exe"))
 
+namespace {
+
+QString firstCaptured(const QString &text, const QString &pattern)
+{
+    const QRegularExpression regex(pattern, QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = regex.match(text);
+    return match.hasMatch() ? match.captured(1).trimmed() : QString();
+}
+
+QStringList allCaptured(const QString &text, const QString &pattern)
+{
+    QStringList values;
+    const QRegularExpression regex(pattern, QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatchIterator it = regex.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        if (match.hasMatch()) {
+            values.append(match.captured(1).trimmed());
+        }
+    }
+    return values;
+}
+
+QString extractUsageValue(const QString &text)
+{
+    return firstCaptured(text, QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)"));
+}
+
+QString extractPowerValue(const QString &text)
+{
+    QString value = firstCaptured(text, QStringLiteral("(?:功率|power)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"));
+    if (value.isEmpty()) {
+        value = firstCaptured(text, QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"));
+    }
+    return value;
+}
+
+QString extractTemperatureValue(const QString &text)
+{
+    QString value = firstCaptured(text, QStringLiteral("(?:温度|temp(?:erature)?)\\s*[:：]?\\s*([^\\s]+)"));
+    if (!value.isEmpty()) {
+        const QString normalized = firstCaptured(value, QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*(?:℃|(?:[^0-9\\s]{0,4}\\s*)?[Cc]))"));
+        if (!normalized.isEmpty()) {
+            return normalized;
+        }
+    }
+    return firstCaptured(text, QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*(?:℃|(?:[^0-9\\s]{0,4}\\s*)?[Cc]))"));
+}
+
+QString extractCapacityValue(const QString &text)
+{
+    return firstCaptured(text, QStringLiteral("(\\d+(?:\\.\\d+)?\\s*[GMK]B?\\s*/\\s*\\d+(?:\\.\\d+)?\\s*[GMK]B?)"));
+}
+
+QStringList extractRateValues(const QString &text)
+{
+    QStringList values;
+
+    const QString upload = firstCaptured(text, QStringLiteral("(?:上传|up(?:load)?)\\s*[:：]?\\s*(?:速度\\s*[:：]?\\s*)?([0-9]+(?:\\.[0-9]+)?\\s*[KMG]?B/s)"));
+    const QString download = firstCaptured(text, QStringLiteral("(?:下载|down(?:load)?)\\s*[:：]?\\s*(?:速度\\s*[:：]?\\s*)?([0-9]+(?:\\.[0-9]+)?\\s*[KMG]?B/s)"));
+    if (!upload.isEmpty()) {
+        values.append(upload);
+    }
+    if (!download.isEmpty()) {
+        values.append(download);
+    }
+
+    if (!values.isEmpty()) {
+        return values;
+    }
+
+    return allCaptured(text, QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*[KMG]?B/s)"));
+}
+
+}
+
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
     , m_quickWidget(new QQuickWidget(this))
@@ -342,73 +418,73 @@ void Widget::resolvedata()
     for (const MonitorNode &node : result) {
         QJsonObject section;
         int type = -1;
-        for (int i = 0; i < node.infolist.size(); ++i) {
-            const QString metric = node.infolist.at(i);
-            if (node.infolist.first().startsWith(QStringLiteral("CPU"))) {
-                type = 0;
-            } else if (node.infolist.first().startsWith(QStringLiteral("GPU"))) {
-                type = 1;
-            } else if (node.infolist.first().startsWith(QStringLiteral("\u5185\u5b58"))) {
-                type = 2;
-            } else if (node.infolist.first().startsWith(QStringLiteral("\u7f51\u7edc"))) {
-                type = 3;
-            }
-
-            QString value;
-            if (metric.contains(QLatin1Char(':'))) {
-                value = metric.section(QLatin1Char(':'), 1).trimmed();
-            } else {
-                value = metric.section(QChar(0xff1a), 1).trimmed();
-            }
-
-            switch (type) {
-            case 0:
-                if (i == 0) section.insert(QStringLiteral("usage"), value);
-                if (i == 1) section.insert(QStringLiteral("power"), value);
-                if (i == 2) section.insert(QStringLiteral("temp"), value);
-                break;
-            case 1:
-                if (i == 0) section.insert(QStringLiteral("usage"), value);
-                if (i == 1) section.insert(QStringLiteral("power"), value);
-                if (i == 2) section.insert(QStringLiteral("temp"), value);
-                if (i == 3) {
-                    section.insert(QStringLiteral("usedRAM"), value.section(QLatin1Char('/'), 0, 0).trimmed());
-                    section.insert(QStringLiteral("totalRAM"), value.section(QLatin1Char('/'), 1, 1).trimmed());
-                }
-                break;
-            case 2:
-                if (i == 0) {
-                    section.insert(QStringLiteral("usedRAM"), value.section(QLatin1Char('/'), 0, 0).trimmed());
-                    section.insert(QStringLiteral("totalRAM"), value.section(QLatin1Char('/'), 1, 1).trimmed());
-                }
-                if (i == 1) section.insert(QStringLiteral("usage"), value);
-                break;
-            case 3:
-                if (i == 0) section.insert(QStringLiteral("upload"), value);
-                if (i == 1) section.insert(QStringLiteral("download"), value);
-                break;
-            default:
-                break;
-            }
+        const QString joined = node.infolist.join(QStringLiteral(" "));
+        const QString typeSource = node.title + QStringLiteral(" ") + joined;
+        if (node.title.startsWith(QStringLiteral("CPU")) || typeSource.contains(QStringLiteral("CPU:"))) {
+            type = 0;
+        } else if (node.title.startsWith(QStringLiteral("GPU")) || typeSource.contains(QStringLiteral("GPU:"))) {
+            type = 1;
+        } else if (node.title.startsWith(QStringLiteral("\u5185\u5b58")) || typeSource.contains(QStringLiteral("\u5185\u5b58"))) {
+            type = 2;
+        } else if (node.title.startsWith(QStringLiteral("\u7f51\u7edc")) || typeSource.contains(QStringLiteral("\u7f51\u7edc"))) {
+            type = 3;
         }
 
         switch (type) {
         case 0:
+        {
+            const QString usage = extractUsageValue(typeSource);
+            const QString power = extractPowerValue(typeSource);
+            const QString temp = extractTemperatureValue(typeSource);
+            section.insert(QStringLiteral("usage"), usage);
+            section.insert(QStringLiteral("power"), power);
+            section.insert(QStringLiteral("temp"), temp);
             section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
             json.insert(QStringLiteral("CPU"), section);
             break;
+        }
         case 1:
+        {
+            const QString usage = extractUsageValue(typeSource);
+            const QString power = extractPowerValue(typeSource);
+            const QString temp = extractTemperatureValue(typeSource);
+            section.insert(QStringLiteral("usage"), usage);
+            section.insert(QStringLiteral("power"), power);
+            section.insert(QStringLiteral("temp"), temp);
+            {
+                const QString vram = extractCapacityValue(typeSource);
+                if (!vram.isEmpty()) {
+                    section.insert(QStringLiteral("usedRAM"), vram.section(QLatin1Char('/'), 0, 0).trimmed());
+                    section.insert(QStringLiteral("totalRAM"), vram.section(QLatin1Char('/'), 1, 1).trimmed());
+                }
+            }
             section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
             json.insert(QStringLiteral("GPU"), section);
             break;
+        }
         case 2:
+            {
+                const QString ram = extractCapacityValue(typeSource);
+                if (!ram.isEmpty()) {
+                    section.insert(QStringLiteral("usedRAM"), ram.section(QLatin1Char('/'), 0, 0).trimmed());
+                    section.insert(QStringLiteral("totalRAM"), ram.section(QLatin1Char('/'), 1, 1).trimmed());
+                }
+            }
+            section.insert(QStringLiteral("usage"), extractUsageValue(typeSource));
             section.insert(QStringLiteral("title"), node.title);
             json.insert(QStringLiteral("RAM"), section);
             break;
         case 3:
+        {
+            const QStringList rates = extractRateValues(typeSource);
+            const QString upload = rates.value(0);
+            const QString download = rates.value(rates.size() > 1 ? 1 : 0);
+            section.insert(QStringLiteral("upload"), upload);
+            section.insert(QStringLiteral("download"), download);
             section.insert(QStringLiteral("title"), node.title.section(QLatin1Char(':'), 1).trimmed());
             json.insert(QStringLiteral("NET"), section);
             break;
+        }
         default:
             break;
         }
@@ -488,7 +564,6 @@ void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
     QVariantList summaryMetrics;
     QVariantMap overview;
     MetricSnapshot snapshot;
-
     static const QHash<QString, QString> accentByKind = {
         {QStringLiteral("cpu"), QStringLiteral("#4f8cff")},
         {QStringLiteral("gpu"), QStringLiteral("#13b8a6")},
@@ -507,9 +582,9 @@ void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
         QString statusText;
 
         if (kind == QStringLiteral("cpu")) {
-            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
-            const QString power = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:功率|power)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"), QRegularExpression::CaseInsensitiveOption));
-            const QString temp = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:温度|temp(?:erature)?)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*(?:°?C|℃))"), QRegularExpression::CaseInsensitiveOption));
+            const QString usage = extractUsageValue(joined);
+            const QString power = extractPowerValue(joined);
+            const QString temp = extractTemperatureValue(joined);
 
             snapshot.cpuUsage = parsePercentValue(usage);
             snapshot.cpuValue = usage;
@@ -521,10 +596,10 @@ void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
             if (!power.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Power"), power, QStringLiteral("secondary")));
             if (!temp.isEmpty()) metrics.append(buildMetricItem(QStringLiteral("Temp"), temp, QStringLiteral("accent")));
         } else if (kind == QStringLiteral("gpu")) {
-            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
-            const QString power = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:功率|power)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*[Ww])"), QRegularExpression::CaseInsensitiveOption));
-            const QString temp = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:温度|temp(?:erature)?)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*(?:°?C|℃))"), QRegularExpression::CaseInsensitiveOption));
-            const QString vram = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(\\d+(?:\\.\\d+)?\\s*[GMK]B?\\s*/\\s*\\d+(?:\\.\\d+)?\\s*[GMK]B?)"), QRegularExpression::CaseInsensitiveOption));
+            const QString usage = extractUsageValue(joined);
+            const QString power = extractPowerValue(joined);
+            const QString temp = extractTemperatureValue(joined);
+            const QString vram = extractCapacityValue(joined);
 
             snapshot.gpuUsage = parsePercentValue(usage);
             snapshot.gpuValue = usage;
@@ -540,8 +615,8 @@ void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
                 secondaryValue = vram;
             }
         } else if (kind == QStringLiteral("memory")) {
-            const QString capacity = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(\\d+(?:\\.\\d+)?\\s*[GMK]B?\\s*/\\s*\\d+(?:\\.\\d+)?\\s*[GMK]B?)"), QRegularExpression::CaseInsensitiveOption));
-            const QString usage = extractFirstMatch(joined, QRegularExpression(QStringLiteral("([0-9]+(?:\\.[0-9]+)?\\s*%)")));
+            const QString capacity = extractCapacityValue(joined);
+            const QString usage = extractUsageValue(joined);
 
             if (!capacity.isEmpty()) {
                 snapshot.memoryUsage = parseCapacityUsagePercent(capacity.section(QLatin1Char('/'), 0, 0).trimmed(),
@@ -559,8 +634,9 @@ void Widget::updatePerformanceModel(const QVector<MonitorNode> &nodes)
                 statusText = snapshot.memoryValue;
             }
         } else if (kind == QStringLiteral("network")) {
-            const QString upload = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:上传|up(?:load)?)\\s*[:：]?\\s*([^\\s]+)"), QRegularExpression::CaseInsensitiveOption));
-            const QString download = extractFirstMatch(joined, QRegularExpression(QStringLiteral("(?:下载|down(?:load)?)\\s*[:：]?\\s*([^\\s]+)"), QRegularExpression::CaseInsensitiveOption));
+            const QStringList rates = extractRateValues(joined);
+            const QString upload = rates.value(0);
+            const QString download = rates.value(rates.size() > 1 ? 1 : 0);
 
             primaryValue = upload;
             secondaryValue = download;
